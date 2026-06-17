@@ -81,44 +81,59 @@ verified against Chart A. Categories & rules from Chart B (Moderate Work column)
 </style>
 
 <script>
-/* ---------------- WBGT calculation (verified against Chart A) ---------------- */
-// Stull (2011) wet-bulb from T(C) and RH(%)
-function wetBulbC(tC, rh){
-  return tC*Math.atan(0.151977*Math.sqrt(rh+8.313659))
-    + Math.atan(tC+rh) - Math.atan(rh-1.676331)
-    + 0.00391838*Math.pow(rh,1.5)*Math.atan(0.023101*rh) - 4.686035;
-}
-// RH(%) from T and dewpoint (C)
+/* ---------------- WBGT via Chart A lookup ----------------
+   Chart A (Epstein) converts air temperature + relative humidity to WBGT, assuming
+   maximal solar load and still air. It deliberately ignores wind and measured solar,
+   which makes it the conservative basis our field protocol is built on. We digitize the
+   chart and bilinearly interpolate between cells. Conditions beyond the chart's plotted
+   range (extreme heat + humidity) are treated as extreme (Black), never as safe.        */
 function rhFromDew(tC, tdC){
   const es=6.11*Math.pow(10,7.5*tC/(237.3+tC));
   const e =6.11*Math.pow(10,7.5*tdC/(237.3+tdC));
   return Math.max(1, Math.min(100, e/es*100));
 }
-// scale 10m wind to globe height (1.1m), Bröde 2012 (factor used by thermofeel)
-function windAt1_1(va10){ return va10*Math.log10(1.1/0.01)*0.333333333333; }
-// Black globe temp (K) from MRT(K), Ta(K), wind(m/s) — Guo 2018 closed form (thermofeel)
-function blackGlobeK(t2k, mrt, va10){
-  const v=windAt1_1(Math.max(va10,0.3));
-  const d=(1.1e8*Math.pow(v,0.6))/(0.95*Math.pow(0.15,0.4));
-  const e=-(Math.pow(mrt,4))-d*t2k;
-  const q=12*e, s=27*(d*d);
-  const delta=Math.cbrt((s+Math.sqrt(s*s-4*Math.pow(q,3)))/2);
-  const Q=0.5*Math.sqrt((1/3)*(delta+q/delta));
-  return -Q+0.5*Math.sqrt(-4*(Q*Q)+d/Q);
-}
-// Mean radiant temp (K) from air temp + global solar (outdoor approx; fp=0.25, a=0.7, eps=0.97)
-function mrtFromSolar(t2k, solar){
-  const sigma=5.67e-8, fp=0.25, absorp=0.7, emis=0.97;
-  const s=Math.max(0,solar||0);
-  return Math.pow(Math.pow(t2k,4) + (absorp*s)/(emis*sigma)*fp, 0.25);
-}
-// Outdoor WBGT in C. solar W/m2 (>=0). If solar null/0 -> shade/low-load case.
-function computeWBGT(tC, rh, windMs, solar){
-  const t2k=tC+273.15;
-  const mrt=mrtFromSolar(t2k, solar);
-  const bgtC=blackGlobeK(t2k, mrt, windMs)-273.15;
-  const twC=wetBulbC(tC, rh);
-  return 0.7*twC + 0.2*bgtC + 0.1*tC;
+const CHART_A_TEMPS_F=[68.0,71.6,75.2,78.8,82.4,86.0,89.6,93.2,96.8,100.4,104.0,107.6,111.2,114.8,118.4,122.0];
+const CHART_A_RH=[0,5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100];
+const CHART_A=[
+[58.6,60.9,64.3,65.5,67.7,69.9,72.1,74.3,76.4,78.5,80.6,82.6,84.7,86.6,88.6,90.5],
+[59.6,62.1,65.6,67.0,69.3,71.7,74.0,76.4,78.6,80.9,83.1,85.3,87.5,89.9,92.1,94.2],
+[60.7,63.3,66.9,68.4,70.8,73.3,75.8,78.2,80.7,83.0,85.5,88.0,90.3,92.8,95.1,97.6],
+[61.7,64.5,68.1,69.6,72.2,74.8,77.4,80.0,82.6,85.2,87.8,90.2,92.8,95.4,98.0,null],
+[62.7,65.6,69.4,70.9,73.6,76.3,79.2,81.8,84.5,87.1,89.8,92.5,95.2,97.8,null,null],
+[63.8,66.7,70.5,72.2,75.1,77.8,80.6,83.4,86.2,89.0,91.8,94.6,97.4,null,null,null],
+[64.8,67.6,71.7,73.4,76.3,79.2,82.1,84.9,87.8,90.8,93.6,96.6,99.4,null,null,null],
+[65.6,68.6,72.7,74.6,77.5,80.5,83.5,86.4,89.4,92.4,95.3,98.3,null,null,null,null],
+[66.7,69.6,73.8,75.7,78.8,81.8,84.8,87.8,90.9,94.0,97.0,null,null,null,null,null],
+[67.5,70.6,74.8,76.8,79.9,83.0,86.1,89.2,92.3,95.4,98.6,null,null,null,null,null],
+[68.4,71.5,75.8,77.8,81.1,84.1,87.4,90.5,93.7,96.9,null,null,null,null,null,null],
+[69.3,72.4,76.7,78.8,82.1,85.3,88.5,91.9,95.1,98.3,null,null,null,null,null,null],
+[70.1,73.3,77.7,79.8,83.2,86.4,89.8,93.1,96.3,99.6,null,null,null,null,null,null],
+[70.9,73.8,78.6,80.9,84.2,87.5,90.8,94.1,97.5,null,null,null,null,null,null,null],
+[71.7,75.0,79.5,81.7,84.9,88.6,91.9,95.3,98.6,null,null,null,null,null,null,null],
+[72.4,75.9,80.3,82.7,86.1,89.6,92.9,96.4,null,null,null,null,null,null,null,null],
+[73.2,76.7,81.2,83.6,87.1,90.4,93.9,97.4,null,null,null,null,null,null,null,null],
+[74.0,77.4,82.0,84.5,88.0,91.5,94.9,98.5,null,null,null,null,null,null,null,null],
+[74.7,78.2,82.9,85.3,88.9,92.3,95.9,99.4,null,null,null,null,null,null,null,null],
+[75.5,78.9,83.6,86.1,89.6,93.2,96.8,null,null,null,null,null,null,null,null,null],
+[76.1,79.7,84.4,86.9,90.5,94.1,97.7,null,null,null,null,null,null,null,null,null],
+];
+const OFF_CHART_WBGT=99.9; // beyond the chart's plotted range = extreme heat -> Black
+// Returns WBGT in F from air temp (F) and RH (%), interpolating Chart A.
+function chartAWBGT_F(tempF, rhPct){
+  const t=Math.max(CHART_A_TEMPS_F[0],Math.min(CHART_A_TEMPS_F[CHART_A_TEMPS_F.length-1],tempF));
+  const h=Math.max(CHART_A_RH[0],Math.min(CHART_A_RH[CHART_A_RH.length-1],rhPct));
+  let ti=0; while(ti<CHART_A_TEMPS_F.length-2 && CHART_A_TEMPS_F[ti+1]<t) ti++;
+  let hi=0; while(hi<CHART_A_RH.length-2 && CHART_A_RH[hi+1]<h) hi++;
+  const t0=CHART_A_TEMPS_F[ti],t1=CHART_A_TEMPS_F[ti+1],h0=CHART_A_RH[hi],h1=CHART_A_RH[hi+1];
+  const c00=CHART_A[hi][ti],c01=CHART_A[hi][ti+1],c10=CHART_A[hi+1][ti],c11=CHART_A[hi+1][ti+1];
+  const corners=[c00,c01,c10,c11];
+  if(corners.every(c=>c==null)) return OFF_CHART_WBGT;
+  const present=corners.filter(c=>c!=null);
+  if(present.length<4) return Math.max(OFF_CHART_WBGT, ...present);
+  const fa=(t1-t)/(t1-t0), fb=(t-t0)/(t1-t0);
+  const top=c00*fa+c01*fb, bot=c10*fa+c11*fb;
+  const ga=(h1-h)/(h1-h0), gb=(h-h0)/(h1-h0);
+  return top*ga+bot*gb;
 }
 
 /* ---------------- Chart B categories (Moderate Work) ---------------- */
@@ -139,12 +154,6 @@ const cToF=c=>c*9/5+32, msToMph=m=>m*2.236936;
 
 /* ---------------- Data sources ---------------- */
 const NWS_HEADERS={ "User-Agent":"(heat-field-dashboard, contact: your-email@example.org)", "Accept":"application/geo+json" };
-
-// NASA POWER has no CORS headers, so browsers on another domain are blocked when calling it
-// directly. This proxy adds the missing header. allorigins is a free public proxy; for a
-// production team tool, host your own (e.g. a Cloudflare Worker) and replace this URL.
-// Set to "" to disable the proxy (POWER will then only work if called from a same-origin backend).
-const CORS_PROXY="https://api.allorigins.win/raw?url=";
 
 async function fetchNWS(lat, lon){
   const pr=await fetch(`https://api.weather.gov/points/${lat},${lon}`,{headers:NWS_HEADERS});
@@ -168,42 +177,6 @@ async function fetchNWS(lat, lon){
   return { tC, rh, windMs: windMs ?? 1.0, station, obsTime:o.timestamp };
 }
 
-// NASA POWER hourly solar (ALLSKY_SFC_SW_DWN, W/m2). Returns most recent non-fill value.
-async function fetchSolarPOWER(lat, lon){
-  const d=new Date();
-  const ymd=v=>v.toISOString().slice(0,10).replace(/-/g,"");
-  // POWER near-real-time lags ~1-3 days, so request a 5-day window and take the latest valid hour.
-  const start=ymd(new Date(d.getTime()-5*864e5)), end=ymd(d);
-  const apiUrl=`https://power.larc.nasa.gov/api/temporal/hourly/point?parameters=ALLSKY_SFC_SW_DWN&community=RE&longitude=${lon}&latitude=${lat}&start=${start}&end=${end}&format=JSON&time-standard=LST`;
-  // POWER does not send CORS headers, so a browser on another domain is blocked.
-  // Route through a CORS proxy. To remove the proxy dependency, host your own tiny
-  // serverless function and set CORS_PROXY="" to call POWER directly server-side.
-  const url = CORS_PROXY ? CORS_PROXY + encodeURIComponent(apiUrl) : apiUrl;
-  const r=await fetch(url);
-  if(!r.ok) throw new Error(`POWER ${r.status}`);
-  const j=await r.json();
-  const series=j.properties?.parameter?.ALLSKY_SFC_SW_DWN || {};
-  const keys=Object.keys(series).sort();
-  for(let i=keys.length-1;i>=0;i--){ const v=series[keys[i]]; if(v!=null && v>-900) return {solar:v, hourKey:keys[i]}; }
-  throw new Error("POWER no valid solar");
-}
-
-// Clear-sky solar estimate from sun elevation (matches Chart A's maximal-solar-load assumption)
-function clearSkySolar(lat, lon, when=new Date()){
-  const rad=Math.PI/180;
-  const dayOfYear=(Date.UTC(when.getUTCFullYear(),when.getUTCMonth(),when.getUTCDate())-Date.UTC(when.getUTCFullYear(),0,0))/864e5;
-  const decl=23.45*Math.sin(rad*360*(284+dayOfYear)/365);
-  // local solar hour from longitude (approx, ignores equation of time)
-  const utcHours=when.getUTCHours()+when.getUTCMinutes()/60;
-  const solarTime=utcHours+lon/15;
-  const hourAngle=(solarTime-12)*15;
-  const sinElev=Math.sin(rad*lat)*Math.sin(rad*decl)+Math.cos(rad*lat)*Math.cos(rad*decl)*Math.cos(rad*hourAngle);
-  const elev=Math.asin(Math.max(-1,Math.min(1,sinElev)))/rad;
-  if(elev<=0) return 0;
-  // simple clear-sky: 1000 * sin(elev) * atmospheric factor
-  return Math.max(0, Math.round(1000*Math.sin(rad*elev)*0.92));
-}
-
 /* ---------------- State + UI ---------------- */
 const DEFAULT_SITES=[
   {name:"LZ40 (Lake Okeechobee)", lat:26.9020,   lon:-80.7890},
@@ -214,8 +187,6 @@ const DEFAULT_SITES=[
   {name:"South Bay",              lat:26.706280, lon:-80.748674},
 ];
 let SITES=loadSites();
-let solarMode=localStorage.getItem("solarMode")||"power"; // power | clearsky | manual
-let manualSolar=JSON.parse(localStorage.getItem("manualSolar")||"{}"); // {siteKey:value}
 let REFRESH_MS=10*60*1000;
 let timer=null;
 
@@ -263,16 +234,12 @@ function render(){
   );
   wrap.append(head);
 
-  // solar mode bar
-  const seg=el("div",{class:"seg"});
-  [["power","NASA POWER (auto)"],["clearsky","Clear-sky estimate"],["manual","Manual / LZ40"]].forEach(([k,label])=>{
-    seg.append(el("button",{class:solarMode===k?"on":"",onclick:()=>{solarMode=k;localStorage.setItem("solarMode",k);render();refreshAll();}},label));
-  });
-  const solarbar=el("div",{class:"solarbar"},
-    el("label",{},"Solar source:"), seg,
-    el("div",{class:"note"}, solarNote())
+  // method banner (Chart A lookup; no solar/wind input)
+  const methodbar=el("div",{class:"solarbar"},
+    el("div",{class:"note", style:"margin-left:0"},
+      "WBGT is read from Chart A using each site's live air temperature and relative humidity (NWS). Chart A assumes full sun and still air, so it is deliberately conservative \u2014 it does not subtract for wind or cloud. A handheld WBGT meter on-site remains the gold standard.")
   );
-  wrap.append(solarbar);
+  wrap.append(methodbar);
 
   // cards grid
   const grid=el("div",{class:"grid", id:"grid"});
@@ -294,29 +261,21 @@ function render(){
 
   // disclaimer + legend
   wrap.append(el("div",{class:"disclaimer", html:
-    "<b>WBGT shown is an estimate.</b> Air temperature, humidity, and wind come from the nearest NWS station; "+
-    "solar load comes from the selected source. A handheld WBGT meter on-site remains the gold standard — "+
-    "use these readings to plan and to flag rising risk, not as the sole basis for a stop-work call."}));
+    "<b>WBGT shown is an estimate.</b> Air temperature and relative humidity come from the nearest NWS station and are read against Chart A, which assumes full sun and still air. "+
+    "A handheld WBGT meter on-site remains the gold standard — use these readings to plan and to flag rising risk, not as the sole basis for a stop-work call."}));
 
   const chips=el("div",{class:"chips"});
   const catRange={White:"≤76.9°F",Green:"77–81.9°F",Yellow:"82–84.9°F",Red:"85–88.9°F",Black:"≥89°F"};
   CATS.forEach(function(c){ chips.append(el("span",{class:"chip"}, el("i",{style:"background:"+c.bg}), c.name+" "+catRange[c.name])); });
   const foot=el("footer",{class:"legend"});
   const d1=el("div",{}); d1.append(el("b",{},"How it works. "));
-  d1.append(document.createTextNode("WBGT is computed with a Stull/Liljegren-derived outdoor model (wet-bulb from temperature and humidity, black-globe from a solar-driven mean radiant temperature and wind), then matched to Chart B's Moderate Work column. Categories:"));
+  d1.append(document.createTextNode("Each site's live air temperature and relative humidity are read against Chart A (Epstein) to get WBGT, then matched to Chart B's Moderate Work column. Chart A assumes maximal sun and still air, so wind and cloud are shown for context but do not lower the WBGT. Categories:"));
   foot.append(d1);
   foot.append(chips);
-  foot.append(el("div",{},"Sources: NWS api.weather.gov (temperature, humidity, wind), NASA POWER hourly ALLSKY_SFC_SW_DWN (solar), and DBHydro LZ40 solar via manual entry."));
-  foot.append(el("div",{},"Tip: enter LZ40's current solar value under the Manual source for a true in-situ reading. Clear-sky mode reproduces Chart A's maximal-solar-load assumption when no sensor is available."));
+  foot.append(el("div",{},"Sources: NWS api.weather.gov (temperature, humidity, wind) and Chart A (Epstein WBGT table). Conditions beyond Chart A's plotted range are treated as extreme (Black)."));
   wrap.append(foot);
 
   root.append(wrap);
-}
-
-function solarNote(){
-  if(solarMode==="power") return "Auto: NASA POWER satellite-derived hourly solar by lat/long. No setup, but lags ~hours and isn't LZ40's sensor.";
-  if(solarMode==="clearsky") return "Estimated from sun position — conservative, matches Chart A's maximal-solar-load basis. Good when no sensor is available.";
-  return "Manual: enter the current solar (W/m²) per site — e.g. LZ40's live value from DBHydro Insights — for a true measured WBGT.";
 }
 
 function cardSkeleton(site,i){
@@ -326,29 +285,15 @@ function cardSkeleton(site,i){
   return card;
 }
 
-async function getSolar(site){
-  if(solarMode==="manual"){
-    const v=manualSolar[siteKey(site)];
-    return { solar: (v===""||v==null||isNaN(v))?null:Number(v), label:"Manual entry", ok:v!=null&&v!=="" };
-  }
-  if(solarMode==="clearsky"){
-    return { solar: clearSkySolar(site.lat, site.lon), label:"Clear-sky estimate", ok:true };
-  }
-  try{ const r=await fetchSolarPOWER(site.lat, site.lon); return { solar:r.solar, label:"NASA POWER "+r.hourKey, ok:true }; }
-  catch(e){ const cs=clearSkySolar(site.lat, site.lon); return { solar:cs, label:"Clear-sky (POWER failed)", ok:true, warn:true }; }
-}
-
 async function refreshOne(site,i){
   const card=document.getElementById("card-"+i);
   if(!card) return;
   try{
-    const [wx, sol] = await Promise.all([ fetchNWS(site.lat,site.lon), getSolar(site) ]);
+    const wx = await fetchNWS(site.lat,site.lon);
     if(wx.tC==null||wx.rh==null) throw new Error("Missing temp/humidity from station");
-    const solarVal = sol.solar; // may be null in manual w/o entry
-    const wbgtC = computeWBGT(wx.tC, wx.rh, wx.windMs, solarVal==null?0:solarVal);
-    const wbgtF = cToF(wbgtC);
+    const wbgtF = chartAWBGT_F(cToF(wx.tC), wx.rh);
     const cat=categoryForF(wbgtF);
-    paintCard(card, site, i, {wx, sol, wbgtF, cat, noSolar: solarVal==null});
+    paintCard(card, site, i, {wx, wbgtF, cat});
   }catch(e){
     card.className="card err";
     card.innerHTML="";
@@ -362,12 +307,12 @@ async function refreshOne(site,i){
 }
 
 function paintCard(card, site, i, d){
-  const {wx, sol, wbgtF, cat, noSolar}=d;
+  const {wx, wbgtF, cat}=d;
   card.className="card";
   card.innerHTML="";
   const band=el("div",{class:"band", style:`background:${cat.bg}; color:${cat.fg}`},
     el("div",{}, el("div",{class:"cat"}, site.name)),
-    el("div",{class:"wbgt"}, noSolar?"—":wbgtF.toFixed(1), el("small",{}, noSolar?" enter solar":" °F WBGT"))
+    el("div",{class:"wbgt"}, wbgtF.toFixed(1), el("small",{}, " °F WBGT"))
   );
   const ruleRow=el("div",{class:"ruleRow"},
     el("div",{class:"rule"}, el("div",{class:"k"},"Work / Rest"), el("div",{class:"v"},cat.wr)),
@@ -378,21 +323,14 @@ function paintCard(card, site, i, d){
     metric("Air temp", cToF(wx.tC).toFixed(0)+"°F"),
     metric("Humidity", wx.rh.toFixed(0)+"%"),
     metric("Wind", msToMph(wx.windMs).toFixed(0)+" mph"),
-    metric("Solar", noSolar?"—":Math.round(sol.solar)+" W/m²")
+    metric("WBGT", wbgtF.toFixed(0)+"°F")
   );
   const obs=wx.obsTime? new Date(wx.obsTime).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : "—";
   const src=el("div",{class:"src"},
     el("span",{}, `NWS ${wx.station} • obs ${obs}`),
-    el("span",{class:"solar-src"}, sol.warn?"⚠ "+sol.label:sol.label)
+    el("span",{class:"solar-src"}, "Chart A (temp + humidity)")
   );
   const body=el("div",{class:"body"}, ruleRow, el("div",{class:"action"},cat.action), metrics, src);
-
-  // manual solar entry (only in manual mode)
-  if(solarMode==="manual"){
-    const inp=el("input",{type:"number", placeholder:"W/m²", value:(manualSolar[siteKey(site)]??"")});
-    inp.addEventListener("change",()=>{ manualSolar[siteKey(site)]=inp.value; localStorage.setItem("manualSolar",JSON.stringify(manualSolar)); refreshOne(site,i); });
-    body.append(el("div",{class:"manualSolar"}, "LZ40 / on-site solar:", inp, "W/m²"));
-  }
   card.append(band, body);
 }
 
