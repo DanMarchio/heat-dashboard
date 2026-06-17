@@ -1,9 +1,9 @@
 <!--
 Heat & Humidity Field Work Dashboard
 Self-contained: open this file in any browser, or host it anywhere static.
-Data: Lake Okeechobee-area Weather Underground / weather.com PWS station IDs when a PWS API key is provided, with NWS fallback by site coordinates.
-WBGT: Chart A lookup from air temperature + relative humidity. Estimated wet-bulb temperature is shown for additional context.
-Categories & rules from Chart B (Moderate Work column).
+Data: NWS (api.weather.gov) for temp/dewpoint->RH/wind. Solar via 3 switchable modes.
+WBGT: outdoor Liljegren/Stull-derived calc (globe temp from MRT+wind, Stull wet bulb),
+verified against Chart A. Categories & rules from Chart B (Moderate Work column).
 -->
 <div id="root"></div>
 
@@ -58,7 +58,7 @@ Categories & rules from Chart B (Moderate Work column).
   .rule .k{font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em;}
   .rule .v{font-size:17px; font-weight:700; margin-top:3px;}
   .action{font-size:13.5px; line-height:1.5;}
-  .metrics{display:grid; grid-template-columns:repeat(auto-fit,minmax(72px,1fr)); gap:8px; border-top:1px solid var(--line); padding-top:12px;}
+  .metrics{display:grid; grid-template-columns:repeat(4,1fr); gap:8px; border-top:1px solid var(--line); padding-top:12px;}
   .metric{text-align:center}
   .metric .k{font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em}
   .metric .v{font-size:15px; font-weight:700; margin-top:2px; font-variant-numeric:tabular-nums}
@@ -146,56 +146,26 @@ const CATS=[
    action:"Active management. Mandatory shaded rest, buddy checks each cycle; reschedule non-urgent heavy tasks."},
   {name:"Red", maxF:88.9, fg:"#ffffff", bg:"#d23b33", wr:"30 / 30 min", water:"~1000 ml",
    action:"High risk. Moderate work only on a strict 30/30 cycle. No hard work. Consider shifting to early morning or postponing."},
-  {name:"Black", maxF:Infinity, fg:"#ffffff", bg:"#1a1a1a", wr:"Extreme caution", water:"≥1000 ml",
-   action:"Extreme caution needs to be exercised. Very high risk of heat casualty. Limit exposure, increase shaded rest and buddy checks, and strongly consider shifting work to cooler conditions."},
+  {name:"Black", maxF:Infinity, fg:"#ffffff", bg:"#1a1a1a", wr:"Caution", water:"—",
+   action:"Exercise extreme caution. Very high risk of heat casualty \u2014 minimize exertion, maintain active cooling and buddy monitoring, and reschedule to cooler conditions wherever possible."},
 ];
 function categoryForF(wbgtF){ return CATS.find(c=>wbgtF<=c.maxF) || CATS[CATS.length-1]; }
-const cToF=c=>c*9/5+32, fToC=f=>(f-32)*5/9, msToMph=m=>m*2.236936, mphToMs=m=>m/2.236936;
-
-// Stull (2011) approximation for natural wet-bulb temperature from air temperature and RH.
-// Good for planning context, not a substitute for a handheld WBGT/wet-bulb instrument.
-function wetBulbC(tC, rhPct){
-  const rh=Math.max(1,Math.min(100,rhPct));
-  return tC*Math.atan(0.151977*Math.sqrt(rh+8.313659)) + Math.atan(tC+rh) -
-    Math.atan(rh-1.676331) + 0.00391838*Math.pow(rh,1.5)*Math.atan(0.023101*rh) - 4.686035;
-}
-function normalizeObsTime(raw, assumeUtc=false){
-  if(!raw) return null;
-  const s=String(raw);
-  if(/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) return s;
-  return assumeUtc ? s.replace(' ','T')+"Z" : s;
-}
+const cToF=c=>c*9/5+32, msToMph=m=>m*2.236936;
 
 /* ---------------- Data sources ---------------- */
 const NWS_HEADERS={ "User-Agent":"(heat-field-dashboard, contact: your-email@example.org)", "Accept":"application/geo+json" };
-const PWS_API_KEY_STORAGE="weatherComPwsApiKey";
-function getPwsApiKey(){ return (localStorage.getItem(PWS_API_KEY_STORAGE)||"").trim(); }
 
-async function fetchPWS(stationId){
-  const apiKey=getPwsApiKey();
-  if(!stationId) throw new Error("No PWS station configured");
-  if(!apiKey) throw new Error("No PWS API key saved");
-  const url=`https://api.weather.com/v2/pws/observations/current?stationId=${encodeURIComponent(stationId)}&format=json&units=e&apiKey=${encodeURIComponent(apiKey)}`;
-  const r=await fetch(url);
-  if(!r.ok) throw new Error(`PWS ${stationId} ${r.status}`);
-  const j=await r.json();
-  const o=j.observations?.[0];
-  const imp=o?.imperial || {};
-  const tempF=imp.temp;
-  const rh=o?.humidity;
-  if(tempF==null || rh==null) throw new Error(`PWS ${stationId} missing temp/humidity`);
-  const windMph=imp.windSpeed ?? 0;
-  return {
-    tC:fToC(tempF),
-    rh:Math.max(1,Math.min(100,rh)),
-    windMs:mphToMs(windMph),
-    station:o.stationID || stationId,
-    stationId:stationId,
-    source:"PWS",
-    obsTime:normalizeObsTime(o.obsTimeUtc || o.obsTimeLocal, !!o.obsTimeUtc)
-  };
+// Haversine distance in miles between two lat/lon points.
+function distMiles(lat1,lon1,lat2,lon2){
+  const R=3958.8, rad=Math.PI/180;
+  const dLat=(lat2-lat1)*rad, dLon=(lon2-lon1)*rad;
+  const a=Math.sin(dLat/2)**2 + Math.cos(lat1*rad)*Math.cos(lat2*rad)*Math.sin(dLon/2)**2;
+  return 2*R*Math.asin(Math.sqrt(a));
 }
 
+// Pull observations from the nearest NWS station to (lat,lon) that actually reports
+// temperature + humidity. Walks the distance-sorted station list rather than blindly
+// taking the first, so sites don't all collapse onto one distant station.
 async function fetchNWS(lat, lon){
   const pr=await fetch(`https://api.weather.gov/points/${lat},${lon}`,{headers:NWS_HEADERS});
   if(!pr.ok) throw new Error(`NWS points ${pr.status}`);
@@ -204,52 +174,51 @@ async function fetchNWS(lat, lon){
   const sr=await fetch(stUrl,{headers:NWS_HEADERS});
   if(!sr.ok) throw new Error(`NWS stations ${sr.status}`);
   const sj=await sr.json();
-  const station=sj.features?.[0]?.properties?.stationIdentifier;
-  if(!station) throw new Error("No NWS station nearby");
-  const or_=await fetch(`https://api.weather.gov/stations/${station}/observations/latest`,{headers:NWS_HEADERS});
-  if(!or_.ok) throw new Error(`NWS obs ${or_.status}`);
-  const o=(await or_.json()).properties;
-  const tC=o.temperature?.value;
-  const tdC=o.dewpoint?.value;
-  let rh=o.relativeHumidity?.value;
-  if(rh==null && tC!=null && tdC!=null) rh=rhFromDew(tC,tdC);
-  let windMs=o.windSpeed?.value; // m/s in NWS
-  if(o.windSpeed?.unitCode && o.windSpeed.unitCode.includes("km_h-1")) windMs=windMs/3.6;
-  return { tC, rh, windMs: windMs ?? 1.0, station, stationId:station, source:"NWS", obsTime:o.timestamp };
-}
-
-async function fetchWeatherForSite(site){
-  // Prefer the explicitly assigned lake-area PWS station. If an API key is not saved,
-  // or the station fails to return current data, fall back to NWS using the site's lat/lon.
-  if(site.stationId){
+  const feats=sj.features||[];
+  if(!feats.length) throw new Error("No NWS station nearby");
+  // Try up to the 6 closest stations; use the first with usable temp + humidity.
+  const maxTry=Math.min(6, feats.length);
+  let lastErr="no valid observation";
+  for(let k=0;k<maxTry;k++){
+    const f=feats[k];
+    const id=f.properties?.stationIdentifier;
+    if(!id) continue;
+    const coords=f.geometry?.coordinates; // [lon,lat]
+    const miles=coords? distMiles(lat,lon,coords[1],coords[0]) : null;
     try{
-      return await fetchPWS(site.stationId);
-    }catch(pwsError){
-      const nws=await fetchNWS(site.lat,site.lon);
-      nws.fallbackReason=pwsError.message;
-      nws.preferredStation=site.stationId;
-      return nws;
-    }
+      const or_=await fetch(`https://api.weather.gov/stations/${id}/observations/latest`,{headers:NWS_HEADERS});
+      if(!or_.ok){ lastErr=`obs ${or_.status}`; continue; }
+      const o=(await or_.json()).properties;
+      const tC=o.temperature?.value;
+      const tdC=o.dewpoint?.value;
+      let rh=o.relativeHumidity?.value;
+      if(rh==null && tC!=null && tdC!=null) rh=rhFromDew(tC,tdC);
+      if(tC==null || rh==null){ lastErr="station missing temp/humidity"; continue; }
+      let windMs=o.windSpeed?.value;
+      if(o.windSpeed?.unitCode && o.windSpeed.unitCode.includes("km_h-1")) windMs=windMs/3.6;
+      return { tC, rh, windMs: windMs ?? 1.0, station:id, miles, obsTime:o.timestamp };
+    }catch(e){ lastErr=e.message; }
   }
-  return await fetchNWS(site.lat,site.lon);
+  throw new Error("No nearby station with data ("+lastErr+")");
 }
 
 /* ---------------- State + UI ---------------- */
 const DEFAULT_SITES=[
-  {name:"Pahokee",        lat:26.820060, lon:-80.665340, stationId:"KFLPAHOK3"},
-  {name:"Indian Prairie", lat:27.084317, lon:-80.892688, stationId:"KFLOKEEC183"},
-  {name:"Fisheating Bay", lat:26.984243, lon:-81.061158, stationId:"KFLOKEEC68"},
-  {name:"Clewiston",      lat:26.767754, lon:-80.919847, stationId:"KFLCLEWI33"},
-  {name:"South Bay",      lat:26.706280, lon:-80.748674, stationId:"KFLBELLE72"},
+  {name:"LZ40 (Lake Okeechobee)", lat:26.9020,   lon:-80.7890},
+  {name:"Indian Prairie",         lat:27.084317, lon:-80.892688},
+  {name:"Fisheating Bay",         lat:26.984243, lon:-81.061158},
+  {name:"Moore Haven Marsh",      lat:26.880104, lon:-81.030280},
+  {name:"Clewiston",              lat:26.767754, lon:-80.919847},
+  {name:"South Bay",              lat:26.706280, lon:-80.748674},
 ];
 let SITES=loadSites();
 let REFRESH_MS=10*60*1000;
 let timer=null;
 
-function siteKey(s){ return s.name+"|"+s.lat+"|"+s.lon+"|"+(s.stationId||""); }
+function siteKey(s){ return s.name+"|"+s.lat+"|"+s.lon; }
 // Bump SITES_VERSION whenever you change DEFAULT_SITES so the new list replaces
 // any older list cached in a user's browser. Users can still add their own sites after.
-const SITES_VERSION="3";
+const SITES_VERSION="2";
 function loadSites(){
   try{
     if(localStorage.getItem("sitesVersion")!==SITES_VERSION){
@@ -281,16 +250,10 @@ function render(){
   // header
   const head=el("header",{class:"top"},
     el("h1",{},"Heat & Humidity Field Dashboard"),
-    el("span",{class:"sub"},"Moderate work • Lake-area station IDs • WBGT + estimated wet bulb • Chart B rules"),
+    el("span",{class:"sub"},"Moderate work • WBGT from live conditions • Chart B rules"),
     el("div",{class:"spacer"}),
     el("div",{class:"controls"},
       el("span",{class:"pill"}, el("span",{class:"dot live"}), "auto-refresh "+(REFRESH_MS/60000)+" min"),
-      el("input",{id:"pwsApiKey", type:"password", placeholder:"PWS API key", value:getPwsApiKey(), title:"Weather.com / Weather Underground PWS API key. Without this, the dashboard falls back to NWS."}),
-      el("button",{onclick:()=>{
-        const key=document.getElementById("pwsApiKey")?.value.trim() || "";
-        localStorage.setItem(PWS_API_KEY_STORAGE,key);
-        refreshAll();
-      }},"Save key"),
       el("button",{onclick:()=>refreshAll()},"Refresh now")
     )
   );
@@ -299,7 +262,7 @@ function render(){
   // method banner (Chart A lookup; no solar/wind input)
   const methodbar=el("div",{class:"solarbar"},
     el("div",{class:"note", style:"margin-left:0"},
-      "WBGT is read from Chart A using each site's live air temperature and relative humidity. The dashboard now prefers the specified Lake Okeechobee-area PWS station IDs when a PWS API key is saved, then falls back to NWS by coordinates. Chart A assumes full sun and still air, so it is deliberately conservative. A handheld WBGT meter on-site remains the gold standard.")
+      "WBGT is read from Chart A using each site's live air temperature and relative humidity (NWS). Chart A assumes full sun and still air, so it is deliberately conservative \u2014 it does not subtract for wind or cloud. A handheld WBGT meter on-site remains the gold standard.")
   );
   wrap.append(methodbar);
 
@@ -310,34 +273,31 @@ function render(){
 
   // add site row
   const nameI=el("input",{placeholder:"Site name",id:"addName"});
-  const latI=el("input",{placeholder:"Latitude (e.g. 26.82)",id:"addLat"});
-  const lonI=el("input",{placeholder:"Longitude (e.g. -80.67)",id:"addLon"});
-  const stationI=el("input",{placeholder:"Optional PWS station ID",id:"addStation"});
-  const addRow=el("div",{class:"addrow"}, nameI, latI, lonI, stationI,
+  const latI=el("input",{placeholder:"Latitude (e.g. 25.65)",id:"addLat"});
+  const lonI=el("input",{placeholder:"Longitude (e.g. -80.49)",id:"addLon"});
+  const addRow=el("div",{class:"addrow"}, nameI, latI, lonI,
     el("button",{class:"primary",onclick:()=>{
-      const n=nameI.value.trim(), la=parseFloat(latI.value), lo=parseFloat(lonI.value), st=stationI.value.trim();
+      const n=nameI.value.trim(), la=parseFloat(latI.value), lo=parseFloat(lonI.value);
       if(!n||isNaN(la)||isNaN(lo)){alert("Enter a name and valid lat/long.");return;}
-      const site={name:n,lat:la,lon:lo};
-      if(st) site.stationId=st;
-      SITES.push(site); saveSites(); render(); refreshAll();
+      SITES.push({name:n,lat:la,lon:lo}); saveSites(); render(); refreshAll();
     }},"Add site")
   );
   wrap.append(addRow);
 
   // disclaimer + legend
   wrap.append(el("div",{class:"disclaimer", html:
-    "<b>WBGT shown is an estimate.</b> Air temperature and relative humidity come from the configured Lake Okeechobee-area PWS station when available, with NWS as a fallback, and are read against Chart A, which assumes full sun and still air. "+
-    "A handheld WBGT/wet-bulb meter on-site remains the gold standard — use these readings to plan and to flag rising risk, not as the sole basis for a stop-work call."}));
+    "<b>WBGT shown is an estimate.</b> Air temperature and relative humidity come from the nearest NWS station and are read against Chart A, which assumes full sun and still air. "+
+    "A handheld WBGT meter on-site remains the gold standard — use these readings to plan and to flag rising risk, not as the sole basis for a stop-work call."}));
 
   const chips=el("div",{class:"chips"});
   const catRange={White:"≤76.9°F",Green:"77–81.9°F",Yellow:"82–84.9°F",Red:"85–88.9°F",Black:"≥89°F"};
   CATS.forEach(function(c){ chips.append(el("span",{class:"chip"}, el("i",{style:"background:"+c.bg}), c.name+" "+catRange[c.name])); });
   const foot=el("footer",{class:"legend"});
   const d1=el("div",{}); d1.append(el("b",{},"How it works. "));
-  d1.append(document.createTextNode("Each site's live air temperature and relative humidity are pulled from the configured lake-area PWS station when possible, or from NWS fallback by coordinates, then read against Chart A (Epstein) to get WBGT and matched to Chart B's Moderate Work column. Estimated wet-bulb temperature is shown as an additional heat-stress context metric. Chart A assumes maximal sun and still air, so wind and cloud are shown for context but do not lower the WBGT. Categories:"));
+  d1.append(document.createTextNode("Each site's live air temperature and relative humidity are read against Chart A (Epstein) to get WBGT, then matched to Chart B's Moderate Work column. Chart A assumes maximal sun and still air, so wind and cloud are shown for context but do not lower the WBGT. Categories:"));
   foot.append(d1);
   foot.append(chips);
-  foot.append(el("div",{},"Sources: configured Weather Underground / weather.com PWS station IDs when a PWS API key is saved, NWS api.weather.gov fallback by coordinates, and Chart A (Epstein WBGT table). Conditions beyond Chart A's plotted range are treated as extreme (Black)."));
+  foot.append(el("div",{},"Sources: NWS api.weather.gov (temperature, humidity, wind) and Chart A (Epstein WBGT table). Conditions beyond Chart A's plotted range are treated as extreme (Black)."));
   wrap.append(foot);
 
   root.append(wrap);
@@ -354,7 +314,7 @@ async function refreshOne(site,i){
   const card=document.getElementById("card-"+i);
   if(!card) return;
   try{
-    const wx = await fetchWeatherForSite(site);
+    const wx = await fetchNWS(site.lat,site.lon);
     if(wx.tC==null||wx.rh==null) throw new Error("Missing temp/humidity from station");
     const wbgtF = chartAWBGT_F(cToF(wx.tC), wx.rh);
     const cat=categoryForF(wbgtF);
@@ -384,19 +344,15 @@ function paintCard(card, site, i, d){
     el("div",{class:"rule"}, el("div",{class:"k"},"Water / hr"), el("div",{class:"v"},cat.water)),
     el("div",{class:"rule"}, el("div",{class:"k"},"Category"), el("div",{class:"v"},cat.name))
   );
-  const wetF=cToF(wetBulbC(wx.tC, wx.rh));
   const metrics=el("div",{class:"metrics"},
     metric("Air temp", cToF(wx.tC).toFixed(0)+"°F"),
     metric("Humidity", wx.rh.toFixed(0)+"%"),
-    metric("Wet bulb", wetF.toFixed(0)+"°F"),
     metric("Wind", msToMph(wx.windMs).toFixed(0)+" mph"),
     metric("WBGT", wbgtF.toFixed(0)+"°F")
   );
   const obs=wx.obsTime? new Date(wx.obsTime).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : "—";
-  const stationLabel=wx.source==="PWS" ? `PWS ${wx.station}` : `NWS ${wx.station}`;
-  const fallbackNote=wx.fallbackReason ? ` • preferred PWS ${wx.preferredStation} unavailable: ${wx.fallbackReason}` : "";
   const src=el("div",{class:"src"},
-    el("span",{}, `${stationLabel} • obs ${obs}${fallbackNote}`),
+    el("span",{}, `NWS ${wx.station}${wx.miles!=null?" ("+wx.miles.toFixed(0)+" mi)":""} • obs ${obs}`),
     el("span",{class:"solar-src"}, "Chart A (temp + humidity)")
   );
   const body=el("div",{class:"body"}, ruleRow, el("div",{class:"action"},cat.action), metrics, src);
