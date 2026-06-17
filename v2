@@ -1,0 +1,394 @@
+<!--
+Heat & Humidity Field Work Dashboard
+Self-contained: open this file in any browser, or host it anywhere static.
+Data: NWS (api.weather.gov) for temp/dewpoint->RH/wind. Solar via 3 switchable modes.
+WBGT: outdoor Liljegren/Stull-derived calc (globe temp from MRT+wind, Stull wet bulb),
+verified against Chart A. Categories & rules from Chart B (Moderate Work column).
+-->
+<div id="root"></div>
+
+<style>
+  :root{
+    --bg:#0e1b24; --panel:#13242f; --panel2:#0b161d; --ink:#eaf2f6; --muted:#8aa3b0;
+    --line:#243a47; --accent:#39b0d6;
+    --white:#f2f5f7; --green:#5ba845; --yellow:#f2c200; --red:#d23b33; --black:#1a1a1a;
+    --shadow:0 6px 24px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  #root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color:var(--ink); background:var(--bg); min-height:100vh; margin:0; padding:0;}
+  .wrap{max-width:1180px; margin:0 auto; padding:22px 20px 60px;}
+  header.top{display:flex; flex-wrap:wrap; align-items:baseline; gap:10px 16px; border-bottom:1px solid var(--line); padding-bottom:14px; margin-bottom:18px;}
+  header.top h1{font-size:21px; margin:0; letter-spacing:.2px; font-weight:700;}
+  header.top .sub{color:var(--muted); font-size:13px;}
+  .spacer{flex:1}
+  .controls{display:flex; flex-wrap:wrap; gap:8px; align-items:center;}
+  select,input,button{font:inherit; color:var(--ink); background:var(--panel2); border:1px solid var(--line);
+    border-radius:8px; padding:7px 10px; outline:none;}
+  input::placeholder{color:#5d7585}
+  button{cursor:pointer; background:var(--panel); transition:border-color .15s, background .15s;}
+  button:hover{border-color:var(--accent)}
+  button:focus-visible, select:focus-visible, input:focus-visible{border-color:var(--accent); box-shadow:0 0 0 2px rgba(57,176,214,.35)}
+  button.primary{background:var(--accent); color:#04222e; border-color:transparent; font-weight:600;}
+  .pill{font-size:12px; color:var(--muted); display:inline-flex; gap:6px; align-items:center;}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);display:inline-block}
+  .dot.live{background:#48d597; box-shadow:0 0 0 0 rgba(72,213,151,.6); animation:pulse 2.2s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(72,213,151,.5)}70%{box-shadow:0 0 0 7px rgba(72,213,151,0)}100%{box-shadow:0 0 0 0 rgba(72,213,151,0)}}
+  @media (prefers-reduced-motion: reduce){.dot.live{animation:none}}
+
+  .solarbar{display:flex; flex-wrap:wrap; gap:10px; align-items:center; background:var(--panel);
+    border:1px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:18px;}
+  .solarbar .seg{display:flex; border:1px solid var(--line); border-radius:9px; overflow:hidden;}
+  .solarbar .seg button{border:0; border-right:1px solid var(--line); border-radius:0; padding:7px 12px; font-size:13px; background:transparent;}
+  .solarbar .seg button:last-child{border-right:0}
+  .solarbar .seg button.on{background:var(--accent); color:#04222e; font-weight:600;}
+  .solarbar label{font-size:13px; color:var(--muted)}
+  .note{font-size:12px; color:var(--muted); margin-left:auto; max-width:520px; line-height:1.45}
+
+  .grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(330px,1fr)); gap:16px;}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:14px; overflow:hidden;
+    box-shadow:var(--shadow); display:flex; flex-direction:column;}
+  .card .band{padding:14px 16px; display:flex; align-items:center; justify-content:space-between; gap:10px;}
+  .band .cat{font-size:13px; font-weight:700; letter-spacing:.12em; text-transform:uppercase;}
+  .band .wbgt{font-size:30px; font-weight:800; line-height:1; font-variant-numeric:tabular-nums;}
+  .band .wbgt small{font-size:14px; font-weight:600; opacity:.8}
+  .card .body{padding:14px 16px; display:flex; flex-direction:column; gap:12px;}
+  .ruleRow{display:flex; gap:10px;}
+  .rule{flex:1; background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:10px 12px;}
+  .rule .k{font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em;}
+  .rule .v{font-size:17px; font-weight:700; margin-top:3px;}
+  .action{font-size:13.5px; line-height:1.5;}
+  .metrics{display:grid; grid-template-columns:repeat(4,1fr); gap:8px; border-top:1px solid var(--line); padding-top:12px;}
+  .metric{text-align:center}
+  .metric .k{font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em}
+  .metric .v{font-size:15px; font-weight:700; margin-top:2px; font-variant-numeric:tabular-nums}
+  .src{font-size:11.5px; color:var(--muted); display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap}
+  .src .solar-src{color:var(--accent)}
+  .card.err .band{background:#2a1418!important}
+  .card.err .cat{color:#ff8a80}
+  .loading{color:var(--muted); font-style:italic; font-size:13px}
+  .manualSolar{display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--muted); padding-top:4px; border-top:1px dashed var(--line); margin-top:2px}
+  .manualSolar input{width:90px; padding:5px 8px}
+
+  .addrow{display:flex; gap:8px; flex-wrap:wrap; margin-top:18px; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 14px;}
+  .addrow input{flex:1; min-width:120px}
+  footer.legend{margin-top:26px; border-top:1px solid var(--line); padding-top:16px; color:var(--muted); font-size:12.5px; line-height:1.6}
+  .legend .chips{display:flex; gap:8px; flex-wrap:wrap; margin:10px 0}
+  .chip{display:flex; align-items:center; gap:7px; padding:5px 10px; border-radius:20px; border:1px solid var(--line); font-size:12px; color:var(--ink)}
+  .chip i{width:11px;height:11px;border-radius:3px;display:inline-block}
+  a{color:var(--accent)}
+  .disclaimer{background:#1d2c12; border:1px solid #3a5a1f; color:#cfe6b4; border-radius:10px; padding:10px 13px; font-size:12.5px; line-height:1.5; margin-top:16px}
+</style>
+
+<script>
+/* ---------------- WBGT calculation (verified against Chart A) ---------------- */
+// Stull (2011) wet-bulb from T(C) and RH(%)
+function wetBulbC(tC, rh){
+  return tC*Math.atan(0.151977*Math.sqrt(rh+8.313659))
+    + Math.atan(tC+rh) - Math.atan(rh-1.676331)
+    + 0.00391838*Math.pow(rh,1.5)*Math.atan(0.023101*rh) - 4.686035;
+}
+// RH(%) from T and dewpoint (C)
+function rhFromDew(tC, tdC){
+  const es=6.11*Math.pow(10,7.5*tC/(237.3+tC));
+  const e =6.11*Math.pow(10,7.5*tdC/(237.3+tdC));
+  return Math.max(1, Math.min(100, e/es*100));
+}
+// scale 10m wind to globe height (1.1m), Bröde 2012 (factor used by thermofeel)
+function windAt1_1(va10){ return va10*Math.log10(1.1/0.01)*0.333333333333; }
+// Black globe temp (K) from MRT(K), Ta(K), wind(m/s) — Guo 2018 closed form (thermofeel)
+function blackGlobeK(t2k, mrt, va10){
+  const v=windAt1_1(Math.max(va10,0.3));
+  const d=(1.1e8*Math.pow(v,0.6))/(0.95*Math.pow(0.15,0.4));
+  const e=-(Math.pow(mrt,4))-d*t2k;
+  const q=12*e, s=27*(d*d);
+  const delta=Math.cbrt((s+Math.sqrt(s*s-4*Math.pow(q,3)))/2);
+  const Q=0.5*Math.sqrt((1/3)*(delta+q/delta));
+  return -Q+0.5*Math.sqrt(-4*(Q*Q)+d/Q);
+}
+// Mean radiant temp (K) from air temp + global solar (outdoor approx; fp=0.25, a=0.7, eps=0.97)
+function mrtFromSolar(t2k, solar){
+  const sigma=5.67e-8, fp=0.25, absorp=0.7, emis=0.97;
+  const s=Math.max(0,solar||0);
+  return Math.pow(Math.pow(t2k,4) + (absorp*s)/(emis*sigma)*fp, 0.25);
+}
+// Outdoor WBGT in C. solar W/m2 (>=0). If solar null/0 -> shade/low-load case.
+function computeWBGT(tC, rh, windMs, solar){
+  const t2k=tC+273.15;
+  const mrt=mrtFromSolar(t2k, solar);
+  const bgtC=blackGlobeK(t2k, mrt, windMs)-273.15;
+  const twC=wetBulbC(tC, rh);
+  return 0.7*twC + 0.2*bgtC + 0.1*tC;
+}
+
+/* ---------------- Chart B categories (Moderate Work) ---------------- */
+const CATS=[
+  {name:"White", maxF:76.9, fg:"#1a1a1a", bg:"#f2f5f7", wr:"60 / 15 min", water:"~300 ml",
+   action:"Normal operations. Keep water available and brief the team on heat-illness signs."},
+  {name:"Green", maxF:81.9, fg:"#ffffff", bg:"#5ba845", wr:"60 / 15 min", water:"~750 ml",
+   action:"Proceed with caution. Enforce the water schedule; watch new or unacclimatized people."},
+  {name:"Yellow", maxF:84.9, fg:"#3a2e00", bg:"#f2c200", wr:"40 / 20 min", water:"~1000 ml",
+   action:"Active management. Mandatory shaded rest, buddy checks each cycle; reschedule non-urgent heavy tasks."},
+  {name:"Red", maxF:88.9, fg:"#ffffff", bg:"#d23b33", wr:"30 / 30 min", water:"~1000 ml",
+   action:"High risk. Moderate work only on a strict 30/30 cycle. No hard work. Consider shifting to early morning or postponing."},
+  {name:"Black", maxF:Infinity, fg:"#ffffff", bg:"#1a1a1a", wr:"STOP", water:"—",
+   action:"Field work suspended. Very high risk of heat casualty. Reschedule to cooler conditions."},
+];
+function categoryForF(wbgtF){ return CATS.find(c=>wbgtF<=c.maxF) || CATS[CATS.length-1]; }
+const cToF=c=>c*9/5+32, msToMph=m=>m*2.236936;
+
+/* ---------------- Data sources ---------------- */
+const NWS_HEADERS={ "User-Agent":"(heat-field-dashboard, contact: your-email@example.org)", "Accept":"application/geo+json" };
+
+// NASA POWER has no CORS headers, so browsers on another domain are blocked when calling it
+// directly. This proxy adds the missing header. allorigins is a free public proxy; for a
+// production team tool, host your own (e.g. a Cloudflare Worker) and replace this URL.
+// Set to "" to disable the proxy (POWER will then only work if called from a same-origin backend).
+const CORS_PROXY="https://api.allorigins.win/raw?url=";
+
+async function fetchNWS(lat, lon){
+  const pr=await fetch(`https://api.weather.gov/points/${lat},${lon}`,{headers:NWS_HEADERS});
+  if(!pr.ok) throw new Error(`NWS points ${pr.status}`);
+  const pj=await pr.json();
+  const stUrl=pj.properties.observationStations;
+  const sr=await fetch(stUrl,{headers:NWS_HEADERS});
+  if(!sr.ok) throw new Error(`NWS stations ${sr.status}`);
+  const sj=await sr.json();
+  const station=sj.features?.[0]?.properties?.stationIdentifier;
+  if(!station) throw new Error("No NWS station nearby");
+  const or_=await fetch(`https://api.weather.gov/stations/${station}/observations/latest`,{headers:NWS_HEADERS});
+  if(!or_.ok) throw new Error(`NWS obs ${or_.status}`);
+  const o=(await or_.json()).properties;
+  const tC=o.temperature?.value;
+  const tdC=o.dewpoint?.value;
+  let rh=o.relativeHumidity?.value;
+  if(rh==null && tC!=null && tdC!=null) rh=rhFromDew(tC,tdC);
+  let windMs=o.windSpeed?.value; // m/s in NWS
+  if(o.windSpeed?.unitCode && o.windSpeed.unitCode.includes("km_h-1")) windMs=windMs/3.6;
+  return { tC, rh, windMs: windMs ?? 1.0, station, obsTime:o.timestamp };
+}
+
+// NASA POWER hourly solar (ALLSKY_SFC_SW_DWN, W/m2). Returns most recent non-fill value.
+async function fetchSolarPOWER(lat, lon){
+  const d=new Date();
+  const ymd=v=>v.toISOString().slice(0,10).replace(/-/g,"");
+  // POWER near-real-time lags ~1-3 days, so request a 5-day window and take the latest valid hour.
+  const start=ymd(new Date(d.getTime()-5*864e5)), end=ymd(d);
+  const apiUrl=`https://power.larc.nasa.gov/api/temporal/hourly/point?parameters=ALLSKY_SFC_SW_DWN&community=RE&longitude=${lon}&latitude=${lat}&start=${start}&end=${end}&format=JSON&time-standard=LST`;
+  // POWER does not send CORS headers, so a browser on another domain is blocked.
+  // Route through a CORS proxy. To remove the proxy dependency, host your own tiny
+  // serverless function and set CORS_PROXY="" to call POWER directly server-side.
+  const url = CORS_PROXY ? CORS_PROXY + encodeURIComponent(apiUrl) : apiUrl;
+  const r=await fetch(url);
+  if(!r.ok) throw new Error(`POWER ${r.status}`);
+  const j=await r.json();
+  const series=j.properties?.parameter?.ALLSKY_SFC_SW_DWN || {};
+  const keys=Object.keys(series).sort();
+  for(let i=keys.length-1;i>=0;i--){ const v=series[keys[i]]; if(v!=null && v>-900) return {solar:v, hourKey:keys[i]}; }
+  throw new Error("POWER no valid solar");
+}
+
+// Clear-sky solar estimate from sun elevation (matches Chart A's maximal-solar-load assumption)
+function clearSkySolar(lat, lon, when=new Date()){
+  const rad=Math.PI/180;
+  const dayOfYear=(Date.UTC(when.getUTCFullYear(),when.getUTCMonth(),when.getUTCDate())-Date.UTC(when.getUTCFullYear(),0,0))/864e5;
+  const decl=23.45*Math.sin(rad*360*(284+dayOfYear)/365);
+  // local solar hour from longitude (approx, ignores equation of time)
+  const utcHours=when.getUTCHours()+when.getUTCMinutes()/60;
+  const solarTime=utcHours+lon/15;
+  const hourAngle=(solarTime-12)*15;
+  const sinElev=Math.sin(rad*lat)*Math.sin(rad*decl)+Math.cos(rad*lat)*Math.cos(rad*decl)*Math.cos(rad*hourAngle);
+  const elev=Math.asin(Math.max(-1,Math.min(1,sinElev)))/rad;
+  if(elev<=0) return 0;
+  // simple clear-sky: 1000 * sin(elev) * atmospheric factor
+  return Math.max(0, Math.round(1000*Math.sin(rad*elev)*0.92));
+}
+
+/* ---------------- State + UI ---------------- */
+const DEFAULT_SITES=[
+  {name:"Royal Palm (Everglades)", lat:25.3820, lon:-80.6090},
+  {name:"Tamiami / DPM area",      lat:25.7617, lon:-80.4960},
+  {name:"LZ40 (Lake Okeechobee)",  lat:26.9020, lon:-80.7890},
+];
+let SITES=loadSites();
+let solarMode=localStorage.getItem("solarMode")||"power"; // power | clearsky | manual
+let manualSolar=JSON.parse(localStorage.getItem("manualSolar")||"{}"); // {siteKey:value}
+let REFRESH_MS=10*60*1000;
+let timer=null;
+
+function siteKey(s){ return s.name+"|"+s.lat+"|"+s.lon; }
+function loadSites(){ try{const s=JSON.parse(localStorage.getItem("sites")); return Array.isArray(s)&&s.length?s:DEFAULT_SITES;}catch(e){return DEFAULT_SITES;} }
+function saveSites(){ localStorage.setItem("sites",JSON.stringify(SITES)); }
+
+function el(tag, attrs={}, ...kids){
+  const n=document.createElement(tag);
+  for(const[k,v] of Object.entries(attrs)){
+    if(k==="class")n.className=v; else if(k==="html")n.innerHTML=v;
+    else if(k.startsWith("on"))n.addEventListener(k.slice(2),v); else n.setAttribute(k,v);
+  }
+  for(const kid of kids){ if(kid==null)continue; n.append(kid.nodeType?kid:document.createTextNode(kid)); }
+  return n;
+}
+
+function render(){
+  const root=document.getElementById("root");
+  root.innerHTML="";
+  const wrap=el("div",{class:"wrap"});
+
+  // header
+  const head=el("header",{class:"top"},
+    el("h1",{},"Heat & Humidity Field Dashboard"),
+    el("span",{class:"sub"},"Moderate work • WBGT from live conditions • Chart B rules"),
+    el("div",{class:"spacer"}),
+    el("div",{class:"controls"},
+      el("span",{class:"pill"}, el("span",{class:"dot live"}), "auto-refresh "+(REFRESH_MS/60000)+" min"),
+      el("button",{onclick:()=>refreshAll()},"Refresh now")
+    )
+  );
+  wrap.append(head);
+
+  // solar mode bar
+  const seg=el("div",{class:"seg"});
+  [["power","NASA POWER (auto)"],["clearsky","Clear-sky estimate"],["manual","Manual / LZ40"]].forEach(([k,label])=>{
+    seg.append(el("button",{class:solarMode===k?"on":"",onclick:()=>{solarMode=k;localStorage.setItem("solarMode",k);render();refreshAll();}},label));
+  });
+  const solarbar=el("div",{class:"solarbar"},
+    el("label",{},"Solar source:"), seg,
+    el("div",{class:"note"}, solarNote())
+  );
+  wrap.append(solarbar);
+
+  // cards grid
+  const grid=el("div",{class:"grid", id:"grid"});
+  SITES.forEach((s,i)=>grid.append(cardSkeleton(s,i)));
+  wrap.append(grid);
+
+  // add site row
+  const nameI=el("input",{placeholder:"Site name",id:"addName"});
+  const latI=el("input",{placeholder:"Latitude (e.g. 25.65)",id:"addLat"});
+  const lonI=el("input",{placeholder:"Longitude (e.g. -80.49)",id:"addLon"});
+  const addRow=el("div",{class:"addrow"}, nameI, latI, lonI,
+    el("button",{class:"primary",onclick:()=>{
+      const n=nameI.value.trim(), la=parseFloat(latI.value), lo=parseFloat(lonI.value);
+      if(!n||isNaN(la)||isNaN(lo)){alert("Enter a name and valid lat/long.");return;}
+      SITES.push({name:n,lat:la,lon:lo}); saveSites(); render(); refreshAll();
+    }},"Add site")
+  );
+  wrap.append(addRow);
+
+  // disclaimer + legend
+  wrap.append(el("div",{class:"disclaimer", html:
+    "<b>WBGT shown is an estimate.</b> Air temperature, humidity, and wind come from the nearest NWS station; "+
+    "solar load comes from the selected source. A handheld WBGT meter on-site remains the gold standard — "+
+    "use these readings to plan and to flag rising risk, not as the sole basis for a stop-work call."}));
+
+  const chips=el("div",{class:"chips"});
+  const catRange={White:"≤76.9°F",Green:"77–81.9°F",Yellow:"82–84.9°F",Red:"85–88.9°F",Black:"≥89°F"};
+  CATS.forEach(function(c){ chips.append(el("span",{class:"chip"}, el("i",{style:"background:"+c.bg}), c.name+" "+catRange[c.name])); });
+  const foot=el("footer",{class:"legend"});
+  const d1=el("div",{}); d1.append(el("b",{},"How it works. "));
+  d1.append(document.createTextNode("WBGT is computed with a Stull/Liljegren-derived outdoor model (wet-bulb from temperature and humidity, black-globe from a solar-driven mean radiant temperature and wind), then matched to Chart B's Moderate Work column. Categories:"));
+  foot.append(d1);
+  foot.append(chips);
+  foot.append(el("div",{},"Sources: NWS api.weather.gov (temperature, humidity, wind), NASA POWER hourly ALLSKY_SFC_SW_DWN (solar), and DBHydro LZ40 solar via manual entry."));
+  foot.append(el("div",{},"Tip: enter LZ40's current solar value under the Manual source for a true in-situ reading. Clear-sky mode reproduces Chart A's maximal-solar-load assumption when no sensor is available."));
+  wrap.append(foot);
+
+  root.append(wrap);
+}
+
+function solarNote(){
+  if(solarMode==="power") return "Auto: NASA POWER satellite-derived hourly solar by lat/long. No setup, but lags ~hours and isn't LZ40's sensor.";
+  if(solarMode==="clearsky") return "Estimated from sun position — conservative, matches Chart A's maximal-solar-load basis. Good when no sensor is available.";
+  return "Manual: enter the current solar (W/m²) per site — e.g. LZ40's live value from DBHydro Insights — for a true measured WBGT.";
+}
+
+function cardSkeleton(site,i){
+  const card=el("div",{class:"card", id:"card-"+i});
+  card.append(el("div",{class:"band"}, el("div",{}, el("div",{class:"cat"},site.name)), el("div",{class:"loading"},"loading…")));
+  card.append(el("div",{class:"body"}, el("div",{class:"loading"},"Fetching conditions…")));
+  return card;
+}
+
+async function getSolar(site){
+  if(solarMode==="manual"){
+    const v=manualSolar[siteKey(site)];
+    return { solar: (v===""||v==null||isNaN(v))?null:Number(v), label:"Manual entry", ok:v!=null&&v!=="" };
+  }
+  if(solarMode==="clearsky"){
+    return { solar: clearSkySolar(site.lat, site.lon), label:"Clear-sky estimate", ok:true };
+  }
+  try{ const r=await fetchSolarPOWER(site.lat, site.lon); return { solar:r.solar, label:"NASA POWER "+r.hourKey, ok:true }; }
+  catch(e){ const cs=clearSkySolar(site.lat, site.lon); return { solar:cs, label:"Clear-sky (POWER failed)", ok:true, warn:true }; }
+}
+
+async function refreshOne(site,i){
+  const card=document.getElementById("card-"+i);
+  if(!card) return;
+  try{
+    const [wx, sol] = await Promise.all([ fetchNWS(site.lat,site.lon), getSolar(site) ]);
+    if(wx.tC==null||wx.rh==null) throw new Error("Missing temp/humidity from station");
+    const solarVal = sol.solar; // may be null in manual w/o entry
+    const wbgtC = computeWBGT(wx.tC, wx.rh, wx.windMs, solarVal==null?0:solarVal);
+    const wbgtF = cToF(wbgtC);
+    const cat=categoryForF(wbgtF);
+    paintCard(card, site, i, {wx, sol, wbgtF, cat, noSolar: solarVal==null});
+  }catch(e){
+    card.className="card err";
+    card.innerHTML="";
+    card.append(el("div",{class:"band"}, el("div",{class:"cat"},site.name), el("div",{class:"wbgt"},"—")));
+    card.append(el("div",{class:"body"},
+      el("div",{class:"action"}, "Couldn't load this site: "+e.message),
+      el("div",{class:"src"}, el("span",{}, "Check the lat/long, or NWS may have no nearby station."),
+        el("button",{onclick:()=>removeSite(i)},"Remove"))
+    ));
+  }
+}
+
+function paintCard(card, site, i, d){
+  const {wx, sol, wbgtF, cat, noSolar}=d;
+  card.className="card";
+  card.innerHTML="";
+  const band=el("div",{class:"band", style:`background:${cat.bg}; color:${cat.fg}`},
+    el("div",{}, el("div",{class:"cat"}, site.name)),
+    el("div",{class:"wbgt"}, noSolar?"—":wbgtF.toFixed(1), el("small",{}, noSolar?" enter solar":" °F WBGT"))
+  );
+  const ruleRow=el("div",{class:"ruleRow"},
+    el("div",{class:"rule"}, el("div",{class:"k"},"Work / Rest"), el("div",{class:"v"},cat.wr)),
+    el("div",{class:"rule"}, el("div",{class:"k"},"Water / hr"), el("div",{class:"v"},cat.water)),
+    el("div",{class:"rule"}, el("div",{class:"k"},"Category"), el("div",{class:"v"},cat.name))
+  );
+  const metrics=el("div",{class:"metrics"},
+    metric("Air temp", cToF(wx.tC).toFixed(0)+"°F"),
+    metric("Humidity", wx.rh.toFixed(0)+"%"),
+    metric("Wind", msToMph(wx.windMs).toFixed(0)+" mph"),
+    metric("Solar", noSolar?"—":Math.round(sol.solar)+" W/m²")
+  );
+  const obs=wx.obsTime? new Date(wx.obsTime).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : "—";
+  const src=el("div",{class:"src"},
+    el("span",{}, `NWS ${wx.station} • obs ${obs}`),
+    el("span",{class:"solar-src"}, sol.warn?"⚠ "+sol.label:sol.label)
+  );
+  const body=el("div",{class:"body"}, ruleRow, el("div",{class:"action"},cat.action), metrics, src);
+
+  // manual solar entry (only in manual mode)
+  if(solarMode==="manual"){
+    const inp=el("input",{type:"number", placeholder:"W/m²", value:(manualSolar[siteKey(site)]??"")});
+    inp.addEventListener("change",()=>{ manualSolar[siteKey(site)]=inp.value; localStorage.setItem("manualSolar",JSON.stringify(manualSolar)); refreshOne(site,i); });
+    body.append(el("div",{class:"manualSolar"}, "LZ40 / on-site solar:", inp, "W/m²"));
+  }
+  card.append(band, body);
+}
+
+function metric(k,v){ return el("div",{class:"metric"}, el("div",{class:"k"},k), el("div",{class:"v"},v)); }
+function removeSite(i){ SITES.splice(i,1); saveSites(); render(); refreshAll(); }
+
+function refreshAll(){ SITES.forEach((s,i)=>refreshOne(s,i)); }
+
+function start(){
+  render(); refreshAll();
+  if(timer)clearInterval(timer);
+  timer=setInterval(refreshAll, REFRESH_MS);
+}
+start();
+</script>
