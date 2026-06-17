@@ -140,6 +140,12 @@ const cToF=c=>c*9/5+32, msToMph=m=>m*2.236936;
 /* ---------------- Data sources ---------------- */
 const NWS_HEADERS={ "User-Agent":"(heat-field-dashboard, contact: your-email@example.org)", "Accept":"application/geo+json" };
 
+// NASA POWER has no CORS headers, so browsers on another domain are blocked when calling it
+// directly. This proxy adds the missing header. allorigins is a free public proxy; for a
+// production team tool, host your own (e.g. a Cloudflare Worker) and replace this URL.
+// Set to "" to disable the proxy (POWER will then only work if called from a same-origin backend).
+const CORS_PROXY="https://api.allorigins.win/raw?url=";
+
 async function fetchNWS(lat, lon){
   const pr=await fetch(`https://api.weather.gov/points/${lat},${lon}`,{headers:NWS_HEADERS});
   if(!pr.ok) throw new Error(`NWS points ${pr.status}`);
@@ -166,8 +172,13 @@ async function fetchNWS(lat, lon){
 async function fetchSolarPOWER(lat, lon){
   const d=new Date();
   const ymd=v=>v.toISOString().slice(0,10).replace(/-/g,"");
-  const start=ymd(new Date(d.getTime()-2*864e5)), end=ymd(d);
-  const url=`https://power.larc.nasa.gov/api/temporal/hourly/point?parameters=ALLSKY_SFC_SW_DWN&community=RE&longitude=${lon}&latitude=${lat}&start=${start}&end=${end}&format=JSON&time-standard=LST`;
+  // POWER near-real-time lags ~1-3 days, so request a 5-day window and take the latest valid hour.
+  const start=ymd(new Date(d.getTime()-5*864e5)), end=ymd(d);
+  const apiUrl=`https://power.larc.nasa.gov/api/temporal/hourly/point?parameters=ALLSKY_SFC_SW_DWN&community=RE&longitude=${lon}&latitude=${lat}&start=${start}&end=${end}&format=JSON&time-standard=LST`;
+  // POWER does not send CORS headers, so a browser on another domain is blocked.
+  // Route through a CORS proxy. To remove the proxy dependency, host your own tiny
+  // serverless function and set CORS_PROXY="" to call POWER directly server-side.
+  const url = CORS_PROXY ? CORS_PROXY + encodeURIComponent(apiUrl) : apiUrl;
   const r=await fetch(url);
   if(!r.ok) throw new Error(`POWER ${r.status}`);
   const j=await r.json();
@@ -195,9 +206,12 @@ function clearSkySolar(lat, lon, when=new Date()){
 
 /* ---------------- State + UI ---------------- */
 const DEFAULT_SITES=[
-  {name:"Royal Palm (Everglades)", lat:25.3820, lon:-80.6090},
-  {name:"Tamiami / DPM area",      lat:25.7617, lon:-80.4960},
-  {name:"LZ40 (Lake Okeechobee)",  lat:26.9020, lon:-80.7890},
+  {name:"LZ40 (Lake Okeechobee)", lat:26.9020,   lon:-80.7890},
+  {name:"Indian Prairie",         lat:27.084317, lon:-80.892688},
+  {name:"Fisheating Bay",         lat:26.984243, lon:-81.061158},
+  {name:"Moore Haven Marsh",      lat:26.880104, lon:-81.030280},
+  {name:"Clewiston",              lat:26.767754, lon:-80.919847},
+  {name:"South Bay",              lat:26.706280, lon:-80.748674},
 ];
 let SITES=loadSites();
 let solarMode=localStorage.getItem("solarMode")||"power"; // power | clearsky | manual
@@ -206,7 +220,20 @@ let REFRESH_MS=10*60*1000;
 let timer=null;
 
 function siteKey(s){ return s.name+"|"+s.lat+"|"+s.lon; }
-function loadSites(){ try{const s=JSON.parse(localStorage.getItem("sites")); return Array.isArray(s)&&s.length?s:DEFAULT_SITES;}catch(e){return DEFAULT_SITES;} }
+// Bump SITES_VERSION whenever you change DEFAULT_SITES so the new list replaces
+// any older list cached in a user's browser. Users can still add their own sites after.
+const SITES_VERSION="2";
+function loadSites(){
+  try{
+    if(localStorage.getItem("sitesVersion")!==SITES_VERSION){
+      localStorage.setItem("sitesVersion",SITES_VERSION);
+      localStorage.setItem("sites",JSON.stringify(DEFAULT_SITES));
+      return DEFAULT_SITES;
+    }
+    const s=JSON.parse(localStorage.getItem("sites"));
+    return Array.isArray(s)&&s.length?s:DEFAULT_SITES;
+  }catch(e){ return DEFAULT_SITES; }
+}
 function saveSites(){ localStorage.setItem("sites",JSON.stringify(SITES)); }
 
 function el(tag, attrs={}, ...kids){
@@ -239,7 +266,7 @@ function render(){
   // solar mode bar
   const seg=el("div",{class:"seg"});
   [["power","NASA POWER (auto)"],["clearsky","Clear-sky estimate"],["manual","Manual / LZ40"]].forEach(([k,label])=>{
-    seg.append(el("button",{class:solarMode===k?"on":"",onclick:()=>{solarMode=k;localStorage.setItem("solarMode",k);refreshAll();}},label));
+    seg.append(el("button",{class:solarMode===k?"on":"",onclick:()=>{solarMode=k;localStorage.setItem("solarMode",k);render();refreshAll();}},label));
   });
   const solarbar=el("div",{class:"solarbar"},
     el("label",{},"Solar source:"), seg,
